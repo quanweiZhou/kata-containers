@@ -12,7 +12,7 @@ use std::os::unix::io::RawFd;
 // use crate::cgroups::Manager as CgroupManager;
 // use crate::intelrdt::Manager as RdtManager;
 
-use nix::fcntl::OFlag;
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use nix::sys::signal::{self, Signal};
 use nix::sys::socket::{self, AddressFamily, SockFlag, SockType};
 use nix::sys::wait::{self, WaitStatus};
@@ -20,7 +20,7 @@ use nix::unistd::{self, Pid};
 use nix::Result;
 
 use nix::Error;
-use protocols::oci::Process as OCIProcess;
+use oci::Process as OCIProcess;
 use slog::Logger;
 
 #[derive(Debug)]
@@ -34,10 +34,8 @@ pub struct Process {
     pub extra_files: Vec<File>,
     //	pub caps: Capabilities,
     //	pub rlimits: Vec<Rlimit>,
-    pub console_socket: Option<RawFd>,
     pub term_master: Option<RawFd>,
-    // parent end of fds
-    pub parent_console_socket: Option<RawFd>,
+    pub tty: bool,
     pub parent_stdin: Option<RawFd>,
     pub parent_stdout: Option<RawFd>,
     pub parent_stderr: Option<RawFd>,
@@ -72,7 +70,13 @@ impl ProcessOperations for Process {
 }
 
 impl Process {
-    pub fn new(logger: &Logger, ocip: &OCIProcess, id: &str, init: bool) -> Result<Self> {
+    pub fn new(
+        logger: &Logger,
+        ocip: &OCIProcess,
+        id: &str,
+        init: bool,
+        pipe_size: i32,
+    ) -> Result<Self> {
         let logger = logger.new(o!("subsystem" => "process"));
 
         let mut p = Process {
@@ -83,9 +87,8 @@ impl Process {
             exit_pipe_w: None,
             exit_pipe_r: None,
             extra_files: Vec::new(),
-            console_socket: None,
+            tty: ocip.terminal,
             term_master: None,
-            parent_console_socket: None,
             parent_stdin: None,
             parent_stdout: None,
             parent_stderr: None,
@@ -98,44 +101,61 @@ impl Process {
 
         info!(logger, "before create console socket!");
 
-        if ocip.Terminal {
-            let (psocket, csocket) = match socket::socketpair(
-                AddressFamily::Unix,
-                SockType::Stream,
-                None,
-                SockFlag::SOCK_CLOEXEC,
-            ) {
-                Ok((u, v)) => (u, v),
-                Err(e) => {
-                    match e {
-                        Error::Sys(errno) => {
-                            info!(logger, "socketpair: {}", errno.desc());
-                        }
-                        _ => {
-                            info!(logger, "socketpair: other error!");
-                        }
-                    }
-                    return Err(e);
-                }
-            };
-            p.parent_console_socket = Some(psocket);
-            p.console_socket = Some(csocket);
+        if !p.tty {
+            info!(logger, "created console socket!");
+
+            let (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
+            p.parent_stdin = Some(pstdin);
+            p.stdin = Some(stdin);
+
+            let (pstdout, stdout) = create_extended_pipe(OFlag::O_CLOEXEC, pipe_size)?;
+            p.parent_stdout = Some(pstdout);
+            p.stdout = Some(stdout);
+
+            let (pstderr, stderr) = create_extended_pipe(OFlag::O_CLOEXEC, pipe_size)?;
+            p.parent_stderr = Some(pstderr);
+            p.stderr = Some(stderr);
         }
-
-        info!(logger, "created console socket!");
-
-        let (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
-        p.parent_stdin = Some(pstdin);
-        p.stdin = Some(stdin);
-
-        let (pstdout, stdout) = unistd::pipe2(OFlag::O_CLOEXEC)?;
-        p.parent_stdout = Some(pstdout);
-        p.stdout = Some(stdout);
-
-        let (pstderr, stderr) = unistd::pipe2(OFlag::O_CLOEXEC)?;
-        p.parent_stderr = Some(pstderr);
-        p.stderr = Some(stderr);
-
         Ok(p)
+    }
+}
+
+fn create_extended_pipe(flags: OFlag, pipe_size: i32) -> Result<(RawFd, RawFd)> {
+    let (r, w) = unistd::pipe2(flags)?;
+    if pipe_size > 0 {
+        fcntl(w, FcntlArg::F_SETPIPE_SZ(pipe_size))?;
+    }
+    Ok((r, w))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::process::create_extended_pipe;
+    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use std::fs;
+    use std::os::unix::io::RawFd;
+
+    fn get_pipe_max_size() -> i32 {
+        fs::read_to_string("/proc/sys/fs/pipe-max-size")
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap()
+    }
+
+    fn get_pipe_size(fd: RawFd) -> i32 {
+        fcntl(fd, FcntlArg::F_GETPIPE_SZ).unwrap()
+    }
+
+    #[test]
+    fn test_create_extended_pipe() {
+        // Test the default
+        let (r, w) = create_extended_pipe(OFlag::O_CLOEXEC, 0).unwrap();
+
+        // Test setting to the max size
+        let max_size = get_pipe_max_size();
+        let (r, w) = create_extended_pipe(OFlag::O_CLOEXEC, max_size).unwrap();
+        let actual_size = get_pipe_size(w);
+        assert_eq!(max_size, actual_size);
     }
 }

@@ -10,9 +10,13 @@ const DEBUG_CONSOLE_FLAG: &str = "agent.debug_console";
 const DEV_MODE_FLAG: &str = "agent.devmode";
 const LOG_LEVEL_OPTION: &str = "agent.log";
 const HOTPLUG_TIMOUT_OPTION: &str = "agent.hotplug_timeout";
+const DEBUG_CONSOLE_VPORT_OPTION: &str = "agent.debug_console_vport";
+const LOG_VPORT_OPTION: &str = "agent.log_vport";
+const CONTAINER_PIPE_SIZE_OPTION: &str = "agent.container_pipe_size";
 
 const DEFAULT_LOG_LEVEL: slog::Level = slog::Level::Info;
 const DEFAULT_HOTPLUG_TIMEOUT: time::Duration = time::Duration::from_secs(3);
+const DEFAULT_CONTAINER_PIPE_SIZE: i32 = 0;
 
 // FIXME: unused
 const TRACE_MODE_FLAG: &str = "agent.trace";
@@ -24,6 +28,9 @@ pub struct agentConfig {
     pub dev_mode: bool,
     pub log_level: slog::Level,
     pub hotplug_timeout: time::Duration,
+    pub debug_console_vport: i32,
+    pub log_vport: i32,
+    pub container_pipe_size: i32,
 }
 
 impl agentConfig {
@@ -33,6 +40,9 @@ impl agentConfig {
             dev_mode: false,
             log_level: DEFAULT_LOG_LEVEL,
             hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+            debug_console_vport: 0,
+            log_vport: 0,
+            container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
         }
     }
 
@@ -60,10 +70,38 @@ impl agentConfig {
                     self.hotplug_timeout = hotplugTimeout;
                 }
             }
+
+            if param.starts_with(format!("{}=", DEBUG_CONSOLE_VPORT_OPTION).as_str()) {
+                let port = get_vsock_port(param)?;
+                if port > 0 {
+                    self.debug_console_vport = port;
+                }
+            }
+
+            if param.starts_with(format!("{}=", LOG_VPORT_OPTION).as_str()) {
+                let port = get_vsock_port(param)?;
+                if port > 0 {
+                    self.log_vport = port;
+                }
+            }
+
+            if param.starts_with(format!("{}=", CONTAINER_PIPE_SIZE_OPTION).as_str()) {
+                let container_pipe_size = get_container_pipe_size(param)?;
+                self.container_pipe_size = container_pipe_size
+            }
         }
 
         Ok(())
     }
+}
+
+fn get_vsock_port(p: &str) -> Result<i32> {
+    let fields: Vec<&str> = p.split("=").collect();
+    if fields.len() != 2 {
+        return Err(ErrorKind::ErrorCode("invalid port parameter".to_string()).into());
+    }
+
+    Ok(fields[1].parse::<i32>()?)
 }
 
 // Map logrus (https://godoc.org/github.com/sirupsen/logrus)
@@ -127,6 +165,40 @@ fn get_hotplug_timeout(param: &str) -> Result<time::Duration> {
     Ok(time::Duration::from_secs(value.unwrap()))
 }
 
+fn get_container_pipe_size(param: &str) -> Result<i32> {
+    let fields: Vec<&str> = param.split("=").collect();
+
+    if fields.len() != 2 {
+        return Err(
+            ErrorKind::ErrorCode(String::from("invalid container pipe size parameter")).into(),
+        );
+    }
+
+    let key = fields[0];
+    if key != CONTAINER_PIPE_SIZE_OPTION {
+        return Err(
+            ErrorKind::ErrorCode(String::from("invalid container pipe size key name")).into(),
+        );
+    }
+
+    let res = fields[1].parse::<i32>();
+    if res.is_err() {
+        return Err(
+            ErrorKind::ErrorCode(String::from("unable to parse container pipe size")).into(),
+        );
+    }
+
+    let value = res.unwrap();
+    if value < 0 {
+        return Err(ErrorKind::ErrorCode(String::from(
+            "container pipe size should not be negative",
+        ))
+        .into());
+    }
+
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +214,11 @@ mod tests {
     const ERR_INVALID_HOTPLUG_TIMEOUT: &str = "invalid hotplug timeout parameter";
     const ERR_INVALID_HOTPLUG_TIMEOUT_PARAM: &str = "unable to parse hotplug timeout";
     const ERR_INVALID_HOTPLUG_TIMEOUT_KEY: &str = "invalid hotplug timeout key name";
+
+    const ERR_INVALID_CONTAINER_PIPE_SIZE: &str = "invalid container pipe size parameter";
+    const ERR_INVALID_CONTAINER_PIPE_SIZE_PARAM: &str = "unable to parse container pipe size";
+    const ERR_INVALID_CONTAINER_PIPE_SIZE_KEY: &str = "invalid container pipe size key name";
+    const ERR_INVALID_CONTAINER_PIPE_NEGATIVE: &str = "container pipe size should not be negative";
 
     // helper function to make errors less crazy-long
     fn make_err(desc: &str) -> Error {
@@ -189,6 +266,7 @@ mod tests {
             dev_mode: bool,
             log_level: slog::Level,
             hotplug_timeout: time::Duration,
+            container_pipe_size: i32,
         }
 
         let tests = &[
@@ -198,6 +276,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.debug_console agent.devmodex",
@@ -205,6 +284,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.logx=debug",
@@ -212,6 +292,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.log=debug",
@@ -219,6 +300,7 @@ mod tests {
                 dev_mode: false,
                 log_level: slog::Level::Debug,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "",
@@ -226,6 +308,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo",
@@ -233,6 +316,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo bar",
@@ -240,6 +324,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo bar",
@@ -247,6 +332,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo agent bar",
@@ -254,6 +340,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo debug_console agent bar devmode",
@@ -261,6 +348,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.debug_console",
@@ -268,6 +356,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "   agent.debug_console ",
@@ -275,6 +364,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.debug_console foo",
@@ -282,6 +372,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: " agent.debug_console foo",
@@ -289,6 +380,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo agent.debug_console bar",
@@ -296,6 +388,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo agent.debug_console",
@@ -303,6 +396,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo agent.debug_console ",
@@ -310,6 +404,7 @@ mod tests {
                 dev_mode: false,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.devmode",
@@ -317,6 +412,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "   agent.devmode ",
@@ -324,6 +420,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.devmode foo",
@@ -331,6 +428,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: " agent.devmode foo",
@@ -338,6 +436,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo agent.devmode bar",
@@ -345,6 +444,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo agent.devmode",
@@ -352,6 +452,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "foo agent.devmode ",
@@ -359,6 +460,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.devmode agent.debug_console",
@@ -366,6 +468,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.devmode agent.debug_console agent.hotplug_timeout=100",
@@ -373,6 +476,7 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: time::Duration::from_secs(100),
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
             TestData {
                 contents: "agent.devmode agent.debug_console agent.hotplug_timeout=0",
@@ -380,6 +484,39 @@ mod tests {
                 dev_mode: true,
                 log_level: DEFAULT_LOG_LEVEL,
                 hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
+            },
+            TestData {
+                contents: "agent.devmode agent.debug_console agent.container_pipe_size=2097152",
+                debug_console: true,
+                dev_mode: true,
+                log_level: DEFAULT_LOG_LEVEL,
+                hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: 2097152,
+            },
+            TestData {
+                contents: "agent.devmode agent.debug_console agent.container_pipe_size=100",
+                debug_console: true,
+                dev_mode: true,
+                log_level: DEFAULT_LOG_LEVEL,
+                hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: 100,
+            },
+            TestData {
+                contents: "agent.devmode agent.debug_console agent.container_pipe_size=0",
+                debug_console: true,
+                dev_mode: true,
+                log_level: DEFAULT_LOG_LEVEL,
+                hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
+            },
+            TestData {
+                contents: "agent.devmode agent.debug_console agent.container_pip_siz=100",
+                debug_console: true,
+                dev_mode: true,
+                log_level: DEFAULT_LOG_LEVEL,
+                hotplug_timeout: DEFAULT_HOTPLUG_TIMEOUT,
+                container_pipe_size: DEFAULT_CONTAINER_PIPE_SIZE,
             },
         ];
 
@@ -409,9 +546,15 @@ mod tests {
                 .expect(&format!("{}: failed to write file contents", msg));
 
             let mut config = agentConfig::new();
-            assert!(config.debug_console == false, msg);
-            assert!(config.dev_mode == false, msg);
-            assert!(config.hotplug_timeout == time::Duration::from_secs(3), msg);
+            assert_eq!(config.debug_console, false, "{}", msg);
+            assert_eq!(config.dev_mode, false, "{}", msg);
+            assert_eq!(
+                config.hotplug_timeout,
+                time::Duration::from_secs(3),
+                "{}",
+                msg
+            );
+            assert_eq!(config.container_pipe_size, 0, "{}", msg);
 
             let result = config.parse_cmdline(filename);
             assert!(result.is_ok(), "{}", msg);
@@ -420,6 +563,7 @@ mod tests {
             assert_eq!(d.dev_mode, config.dev_mode, "{}", msg);
             assert_eq!(d.log_level, config.log_level, "{}", msg);
             assert_eq!(d.hotplug_timeout, config.hotplug_timeout, "{}", msg);
+            assert_eq!(d.container_pipe_size, config.container_pipe_size, "{}", msg);
         }
     }
 
@@ -654,6 +798,80 @@ mod tests {
             let msg = format!("test[{}]: {:?}", i, d);
 
             let result = get_hotplug_timeout(d.param);
+
+            let msg = format!("{}: result: {:?}", msg, result);
+
+            assert_result!(d.result, result, format!("{}", msg));
+        }
+    }
+
+    #[test]
+    fn test_get_container_pipe_size() {
+        #[derive(Debug)]
+        struct TestData<'a> {
+            param: &'a str,
+            result: Result<i32>,
+        }
+
+        let tests = &[
+            TestData {
+                param: "",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE)),
+            },
+            TestData {
+                param: "agent.container_pipe_size",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE)),
+            },
+            TestData {
+                param: "foo=bar",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE_KEY)),
+            },
+            TestData {
+                param: "agent.container_pip_siz=1",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE_KEY)),
+            },
+            TestData {
+                param: "agent.container_pipe_size=1",
+                result: Ok(1),
+            },
+            TestData {
+                param: "agent.container_pipe_size=3",
+                result: Ok(3),
+            },
+            TestData {
+                param: "agent.container_pipe_size=2097152",
+                result: Ok(2097152),
+            },
+            TestData {
+                param: "agent.container_pipe_size=0",
+                result: Ok(0),
+            },
+            TestData {
+                param: "agent.container_pipe_size=-1",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_NEGATIVE)),
+            },
+            TestData {
+                param: "agent.container_pipe_size=foobar",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE_PARAM)),
+            },
+            TestData {
+                param: "agent.container_pipe_size=j",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE_PARAM)),
+            },
+            TestData {
+                param: "agent.container_pipe_size=4jbsdja",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE_PARAM)),
+            },
+            TestData {
+                param: "agent.container_pipe_size=4294967296",
+                result: Err(make_err(ERR_INVALID_CONTAINER_PIPE_SIZE_PARAM)),
+            },
+        ];
+
+        for (i, d) in tests.iter().enumerate() {
+            let msg = format!("test[{}]: {:?}", i, d);
+
+            let result = get_container_pipe_size(d.param);
 
             let msg = format!("{}: result: {:?}", msg, result);
 
